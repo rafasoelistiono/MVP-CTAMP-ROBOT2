@@ -1,0 +1,371 @@
+from __future__ import annotations
+
+import ast
+import math
+import re
+from pathlib import Path
+from typing import Any
+
+from task_planning.types import ALLOWED_ACTIONS
+
+from .state import ObstacleState, ObjectState, WorldState
+
+
+VALID_VARIANTS = {
+    "group_no_obs",
+    "ungroup_no_obs",
+    "group_obs",
+    "ungroup_obs",
+    "group_long_obs",
+    "ungroup_long_obs",
+}
+_SECTION_RE = re.compile(r"^##\s+([a-zA-Z0-9_-]+)\s*$")
+_FIELD_RE = re.compile(r"^\s*-\s+([a-zA-Z0-9_-]+)\s*:\s*(.*?)\s*$")
+_CONTINUATION_RE = re.compile(r"^\s+([a-zA-Z0-9_-]+)\s*:\s*(.*?)\s*$")
+
+
+class ContextValidationError(ValueError):
+    """The runtime context is missing or contradicts required scene facts."""
+
+
+def _parse_scalar(raw: str) -> Any:
+    value = raw.strip()
+    if not value:
+        return ""
+    lowered = value.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if lowered in {"null", "none"}:
+        return None
+    if value.startswith("[") and value.endswith("]"):
+        try:
+            return ast.literal_eval(value)
+        except (SyntaxError, ValueError):
+            # CONTEXT.MD examples intentionally use compact YAML-style lists
+            # such as [pick, place] without Python/JSON quotes.
+            inner = value[1:-1].strip()
+            if not inner:
+                return []
+            return [_parse_scalar(item) for item in inner.split(",")]
+    if value.startswith("{"):
+        try:
+            return ast.literal_eval(value)
+        except (SyntaxError, ValueError) as exc:
+            raise ContextValidationError(f"invalid context literal: {value}") from exc
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        return value.strip('"').strip("'")
+
+
+def _parse_markdown(text: str) -> dict[str, Any]:
+    sections: dict[str, Any] = {}
+    section: str | None = None
+    current_record: dict[str, Any] | None = None
+
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("# ") or stripped.startswith("~~~"):
+            continue
+        section_match = _SECTION_RE.match(stripped)
+        if section_match:
+            section = section_match.group(1).lower()
+            sections[section] = [] if section in {"objects", "obstacles"} else {}
+            current_record = None
+            continue
+        if section is None:
+            continue
+
+        field_match = _FIELD_RE.match(raw_line)
+        continuation_match = _CONTINUATION_RE.match(raw_line)
+        match = field_match or continuation_match
+        if match is None:
+            continue
+
+        key, raw_value = match.groups()
+        value = _parse_scalar(raw_value)
+        if section in {"objects", "obstacles"}:
+            if field_match and key == "id":
+                current_record = {"id": value}
+                sections[section].append(current_record)
+            elif current_record is None:
+                raise ContextValidationError(
+                    f"line {line_number}: {section} record must start with '- id:'"
+                )
+            else:
+                current_record[key] = value
+        else:
+            sections[section][key] = value
+    return sections
+
+
+def _required_map(sections: dict[str, Any], name: str, fields: set[str]) -> dict:
+    value = sections.get(name)
+    if not isinstance(value, dict):
+        raise ContextValidationError(f"context is missing required section '## {name}'")
+    missing = sorted(fields - set(value))
+    if missing:
+        raise ContextValidationError(
+            f"section '## {name}' is missing fields: {', '.join(missing)}"
+        )
+    return value
+
+
+def _tuple_numbers(value: Any, length: int, path: str) -> tuple[float, ...]:
+    if not isinstance(value, (list, tuple)) or len(value) != length:
+        raise ContextValidationError(f"{path} must contain {length} numbers")
+    try:
+        return tuple(float(item) for item in value)
+    except (TypeError, ValueError) as exc:
+        raise ContextValidationError(f"{path} must contain only numbers") from exc
+
+
+def build_world_state(path: str | Path) -> WorldState:
+    context_path = Path(path)
+    try:
+        text = context_path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise ContextValidationError(
+            f"context file does not exist: {context_path}"
+        ) from exc
+    sections = _parse_markdown(text)
+
+    scene = _required_map(sections, "scene", {"scene_id", "variant"})
+    table = _required_map(
+        sections,
+        "table",
+        {"x_range", "y_range", "z_top", "goal_center"},
+    )
+    robot = _required_map(
+        sections,
+        "robot",
+        {
+            "id",
+            "reach_min_xy",
+            "reach_max_xy",
+            "base_xy",
+            "capabilities",
+        },
+    )
+    task = _required_map(
+        sections,
+        "task",
+        {"name", "target_objects", "description"},
+    )
+    constraints = _required_map(
+        sections,
+        "constraints",
+        {
+            "preserve_obstacles",
+            "max_retries_per_object",
+            "allowed_predicates",
+        },
+    )
+
+    variant = str(scene["variant"])
+    scene_id = str(scene["scene_id"]).strip()
+    if not scene_id:
+        raise ContextValidationError("scene.scene_id must not be empty")
+    if variant not in VALID_VARIANTS:
+        raise ContextValidationError(
+            f"scene.variant {variant!r} is invalid; expected one of {sorted(VALID_VARIANTS)}"
+        )
+    task_name = str(task["name"])
+    if re.fullmatch(r"[a-z][a-z0-9_-]*", task_name) is None:
+        raise ContextValidationError(
+            f"task.name {task_name!r} must be a lowercase plugin identifier"
+        )
+    task_description = str(task["description"]).strip()
+    if not task_description:
+        raise ContextValidationError("task.description must not be empty")
+
+    base_xy = _tuple_numbers(robot["base_xy"], 2, "robot.base_xy")
+    reach_min = float(robot["reach_min_xy"])
+    reach_max = float(robot["reach_max_xy"])
+    if not 0 <= reach_min < reach_max:
+        raise ContextValidationError(
+            "robot reach bounds must satisfy 0 <= reach_min_xy < reach_max_xy"
+        )
+
+    obstacle_rows = sections.get("obstacles", [])
+    if not isinstance(obstacle_rows, list):
+        raise ContextValidationError("section '## obstacles' must be a record list")
+    obstacles: list[ObstacleState] = []
+    obstacle_ids: set[str] = set()
+    for index, raw in enumerate(obstacle_rows):
+        required = {"id", "pose", "fragile", "radius", "height"}
+        missing = sorted(required - set(raw))
+        if missing:
+            raise ContextValidationError(
+                f"obstacles[{index}] is missing fields: {', '.join(missing)}"
+            )
+        obstacle_id = str(raw["id"])
+        if not obstacle_id.strip():
+            raise ContextValidationError(f"obstacles[{index}].id must not be empty")
+        if obstacle_id in obstacle_ids:
+            raise ContextValidationError(f"duplicate obstacle id: {obstacle_id}")
+        obstacle_ids.add(obstacle_id)
+        height = str(raw["height"])
+        if height not in {"short", "long"}:
+            raise ContextValidationError(
+                f"obstacles[{index}].height must be 'short' or 'long'"
+            )
+        if not isinstance(raw["fragile"], bool):
+            raise ContextValidationError(
+                f"obstacles[{index}].fragile must be true or false"
+            )
+        obstacles.append(
+            ObstacleState(
+                id=obstacle_id,
+                pose=_tuple_numbers(raw["pose"], 3, f"obstacles[{index}].pose"),
+                fragile=bool(raw["fragile"]),
+                radius=float(raw["radius"]),
+                height=height,  # type: ignore[arg-type]
+            )
+        )
+
+    object_rows = sections.get("objects")
+    if not isinstance(object_rows, list) or not object_rows:
+        raise ContextValidationError(
+            "context requires at least one record under '## objects'"
+        )
+    objects: list[ObjectState] = []
+    object_ids: set[str] = set()
+    for index, raw in enumerate(object_rows):
+        required = {"id", "class", "pose", "reachable", "near_obstacle"}
+        missing = sorted(required - set(raw))
+        if missing:
+            raise ContextValidationError(
+                f"objects[{index}] is missing fields: {', '.join(missing)}"
+            )
+        object_id = str(raw["id"])
+        if not object_id.strip():
+            raise ContextValidationError(f"objects[{index}].id must not be empty")
+        if object_id in object_ids:
+            raise ContextValidationError(f"duplicate object id: {object_id}")
+        object_ids.add(object_id)
+        cls = str(raw["class"])
+        if cls not in {"cube", "cylinder"}:
+            raise ContextValidationError(
+                f"objects[{index}].class must be 'cube' or 'cylinder'"
+            )
+        if not isinstance(raw["reachable"], bool):
+            raise ContextValidationError(
+                f"objects[{index}].reachable must be true or false"
+            )
+        if not isinstance(raw["near_obstacle"], bool):
+            raise ContextValidationError(
+                f"objects[{index}].near_obstacle must be true or false"
+            )
+        pose = _tuple_numbers(raw["pose"], 3, f"objects[{index}].pose")
+        distance = math.dist(pose[:2], base_xy)
+        reachable = reach_min <= distance <= reach_max
+        near_obstacle = any(
+            math.dist(pose[:2], obstacle.pose[:2]) <= 0.18
+            for obstacle in obstacles
+        )
+        objects.append(
+            ObjectState(
+                id=object_id,
+                cls=cls,  # type: ignore[arg-type]
+                pose=pose,
+                reachable=reachable,
+                near_obstacle=near_obstacle,
+            )
+        )
+
+    targets_raw = task["target_objects"]
+    if not isinstance(targets_raw, list) or not targets_raw:
+        raise ContextValidationError("task.target_objects must be a non-empty list")
+    targets = tuple(str(value) for value in targets_raw)
+    if len(set(targets)) != len(targets):
+        raise ContextValidationError("task.target_objects contains duplicates")
+    unknown_targets = sorted(set(targets) - object_ids)
+    if unknown_targets:
+        raise ContextValidationError(
+            "task.target_objects references unknown objects: "
+            + ", ".join(unknown_targets)
+        )
+
+    capabilities_raw = robot["capabilities"]
+    if not isinstance(capabilities_raw, list) or not capabilities_raw:
+        raise ContextValidationError("robot.capabilities must be a non-empty list")
+    robot_id = str(robot["id"]).strip()
+    if not robot_id:
+        raise ContextValidationError("robot.id must not be empty")
+    unsupported_capabilities = sorted(set(map(str, capabilities_raw)) - set(ALLOWED_ACTIONS))
+    if unsupported_capabilities:
+        raise ContextValidationError(
+            "robot.capabilities contains unsupported actions: "
+            + ", ".join(unsupported_capabilities)
+        )
+
+    allowed_raw = constraints["allowed_predicates"]
+    if not isinstance(allowed_raw, list) or not allowed_raw:
+        raise ContextValidationError(
+            "constraints.allowed_predicates must be a non-empty list"
+        )
+    allowed = tuple(str(value) for value in allowed_raw)
+    invalid_predicates = sorted(
+        name
+        for name in allowed
+        if re.fullmatch(r"[a-z][a-z0-9-]*", name) is None
+    )
+    if invalid_predicates:
+        raise ContextValidationError(
+            "context contains invalid predicate identifiers: "
+            + ", ".join(invalid_predicates)
+        )
+
+    if variant.endswith("_no_obs") and obstacles:
+        raise ContextValidationError(
+            f"variant {variant!r} must not define obstacles"
+        )
+    if not variant.endswith("_no_obs") and not obstacles:
+        raise ContextValidationError(
+            f"variant {variant!r} requires obstacle records"
+        )
+    if not isinstance(constraints["preserve_obstacles"], bool):
+        raise ContextValidationError(
+            "constraints.preserve_obstacles must be true or false"
+        )
+    max_retries = int(constraints["max_retries_per_object"])
+    if max_retries < 0:
+        raise ContextValidationError(
+            "constraints.max_retries_per_object must be non-negative"
+        )
+    if bool(constraints["preserve_obstacles"]):
+        non_fragile = [obstacle.id for obstacle in obstacles if not obstacle.fragile]
+        if non_fragile:
+            raise ContextValidationError(
+                "preserve_obstacles=true requires every obstacle to be fragile: "
+                + ", ".join(non_fragile)
+            )
+
+    return WorldState(
+        scene_id=scene_id,
+        variant=variant,
+        objects=tuple(objects),
+        obstacles=tuple(obstacles),
+        table_x_range=_tuple_numbers(table["x_range"], 2, "table.x_range"),
+        table_y_range=_tuple_numbers(table["y_range"], 2, "table.y_range"),
+        table_z_top=float(table["z_top"]),
+        goal_center=_tuple_numbers(table["goal_center"], 3, "table.goal_center"),
+        robot_id=robot_id,
+        robot_base_xy=base_xy,
+        robot_reach_min=reach_min,
+        robot_reach_max=reach_max,
+        robot_capabilities=tuple(str(value) for value in capabilities_raw),
+        task_name=task_name,
+        target_objects=targets,
+        task_description=task_description,
+        preserve_obstacles=bool(constraints["preserve_obstacles"]),
+        max_retries_per_object=max_retries,
+        allowed_predicates=allowed,
+    )

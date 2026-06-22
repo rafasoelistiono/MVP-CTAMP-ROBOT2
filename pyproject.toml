@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ctamp-robot"
+version = "0.2.0"
+description = "Extensible CTAMP tabletop task planning and MuJoCo execution framework"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dependencies = [
+  "mujoco>=2.3.3",
+  "numpy>=2.0,<3",
+  "python-dotenv>=1.0.0",
+  "tomli>=2.0.0; python_version < '3.11'",
+  "pin>=2.6.0",
+  "robot_descriptions>=1.0.0",
+  "ompl>=1.6.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[project.scripts]
+ctamp-generate-plan = "cli.generate_plan:cli"
+ctamp-run = "cli.run_simulation:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+  "adaptive*",
+  "backends*",
+  "cli*",
+  "configuration*",
+  "execution*",
+  "task_planning*",
+  "plugins*",
+  "scene*",
+  "telemetry*",
+  "world*",
+]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+configuration = [
+  "profiles/models/*.toml",
+  "profiles/runtime/*.toml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
