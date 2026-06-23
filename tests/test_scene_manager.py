@@ -74,6 +74,8 @@ def test_summary_records_runtime_provenance(tmp_path):
             "plan_source": "original_no_llm",
             "benchmark_role": "reference",
             "benchmark_label": "original-v1",
+            "experiment_label": "Qwen 3 Coder",
+            "run_id": "20260622_120000",
         },
         log_dir=tmp_path,
     )
@@ -86,3 +88,6 @@ def test_summary_records_runtime_provenance(tmp_path):
     assert row["benchmark_role"] == "reference"
     assert row["benchmark_label"] == "original-v1"
     assert row["reference_100_percent"] == "true"
+    assert row["run_id"] == "20260622_120000_qwen_3_coder"
+    assert row["experiment_label"] == "qwen_3_coder"
+    assert path.name == "align_group_no_obs_20260622_120000_qwen_3_coder.csv"

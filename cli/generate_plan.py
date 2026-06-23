@@ -16,6 +16,11 @@ from task_planning.generator import (
 from task_planning.loader import parse_plan
 from task_planning.validator import validate
 from plugins.registry import DEFAULT_REGISTRY, PluginRegistry
+from telemetry.naming import (
+    infer_experiment_label,
+    normalize_experiment_label,
+    with_experiment_label,
+)
 from world.builder import build_world_state
 
 
@@ -36,6 +41,14 @@ def _arguments() -> argparse.Namespace:
         default="plugins",
         help="Trusted package containing deterministic *_task.py plugins.",
     )
+    parser.add_argument(
+        "--experiment-label",
+        default="",
+        help=(
+            "Optional model/run label. When omitted with --response-file, "
+            "the suffix is inferred from that filename."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -46,6 +59,13 @@ def main() -> int:
         raise PlanGenerationError(
             f"--task {args.task!r} does not match context task {world.task_name!r}"
         )
+    experiment_label = normalize_experiment_label(args.experiment_label)
+    if not experiment_label and args.response_file:
+        experiment_label = infer_experiment_label(
+            args.response_file,
+            scene_id=world.scene_id,
+            task=args.task,
+        )
     context_text = args.context.read_text(encoding="utf-8")
     if args.response_file:
         payload = parse_llm_json(args.response_file.read_text(encoding="utf-8"))
@@ -55,7 +75,11 @@ def main() -> int:
     status = payload.get("status")
     if status in {"UNSAT", "NEEDS_CLARIFICATION"}:
         args.output.mkdir(parents=True, exist_ok=True)
-        status_path = args.output / f"{world.scene_id}_{args.task}_{status.lower()}.json"
+        status_stem = with_experiment_label(
+            f"{world.scene_id}_{args.task}_{status.lower()}",
+            experiment_label,
+        )
+        status_path = args.output / f"{status_stem}.json"
         status_path.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
@@ -81,14 +105,19 @@ def main() -> int:
     registry.get(plan.task).validate_plan(plan, world)
 
     args.output.mkdir(parents=True, exist_ok=True)
-    output_path = args.output / f"{world.scene_id}_{plan.task}.json"
+    output_stem = with_experiment_label(
+        f"{world.scene_id}_{plan.task}",
+        experiment_label,
+    )
+    output_path = args.output / f"{output_stem}.json"
     output_path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     print(
         f"TaskPlan valid: {output_path} | steps={len(plan.steps)} "
-        f"objects={','.join(plan.target_objects)}"
+        f"objects={','.join(plan.target_objects)} "
+        f"experiment={experiment_label or 'unlabeled'}"
     )
     return 0
 

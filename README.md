@@ -90,6 +90,84 @@ dan kontak antar-layer lebih besar tanpa melampaui bukaan gripper Panda.
 Orientation dan velocity direkam sebagai diagnostic, tetapi belum menjadi hard
 gate sampai primitive place mengontrol orientasi object secara eksplisit.
 
+## Benchmark TaskPlan empat LLM
+
+Visualisasi berikut membandingkan DeepSeek V4 Flash, Qwen3 Coder, MiniMax M3,
+dan GPT-OSS pada context `align` dan `stack`. Satu data point adalah **run
+terbaru** untuk pasangan task dan model. Karena saat ini hanya ada satu run per
+pasangan yang dipilih, hasil ini merupakan perbandingan run, bukan estimasi
+statistik atau rata-rata keberhasilan model. Untuk Qwen3 Coder `stack`, run
+terbaru yang dipakai adalah `20260622_224529_qwen3coder`.
+
+TaskPlan pembanding adalah
+`task_plans/examples/ungroup_obs_align_cubes.json` dan
+`task_plans/examples/ungroup_obs_stack_cubes.json`. Arti metrik pada kedua
+gambar:
+
+- **Summary completion**: nilai `completion_percent` yang ditulis summary CSV.
+- **Verified placements**: persentase target unik dengan event `STEP=OK` untuk
+  `place` atau `stack_place`; placement recovery tetap dihitung.
+- **Final goal reached**: hasil verifier final yang direkam sebagai `success`.
+- **Planned steps OK**: step ID asli TaskPlan yang pernah menghasilkan
+  `STEP=OK`, dibagi jumlah step asli. Step recovery tambahan tidak masuk
+  denominator.
+- **Failed STEP attempts**: seluruh attempt berstatus `FAILED`, termasuk retry.
+- **Plan structure match**: kecocokan per posisi untuk tuple `action`, `object`,
+  `slot`, dan `on_top_of` terhadap TaskPlan pembanding.
+- **Goal predicate match**: Jaccard similarity antara himpunan predicate plan
+  kandidat dan plan pembanding. Predicate tambahan ikut menurunkan skor.
+- **Slot geometry deviation**: selisih absolut field geometri terhadap plan
+  pembanding dalam milimeter. Ini mengukur perbedaan plan, bukan otomatis
+  kesalahan fisik, karena backend masih melakukan geometric binding dari state
+  MuJoCo.
+- **Runtime**: `duration_ms` summary yang dikonversi ke detik.
+
+### Align
+
+![Perbandingan performa dan goal state align empat LLM](docs/images/llm_align_benchmark.png)
+
+| Model | Summary | Placement terverifikasi | Final goal | Runtime | Failed attempt | Struktur plan |
+|---|---:|---:|:---:|---:|---:|---:|
+| DeepSeek V4 Flash | 50% | 50% (2/4) | gagal | 67.119 s | 5 | 100% |
+| Qwen3 Coder | 50% | 0% (0/4) | gagal | 37.162 s | 13 | 50% |
+| MiniMax M3 | 50% | 0% (0/4) | gagal | 34.834 s | 13 | 50% |
+| GPT-OSS | 50% | 0% (0/4) | gagal | 33.841 s | 13 | 50% |
+
+Tidak ada run `align` yang mencapai final goal. DeepSeek memakai nama slot
+`slot_0` sampai `slot_3` sesuai kontrak dan berhasil menempatkan dua cube.
+Qwen3 Coder, MiniMax M3, dan GPT-OSS memakai `slot0` sampai `slot3` pada steps;
+masing-masing menghasilkan delapan attempt `missing_place_target` dan tidak
+memiliki placement valid. Karena itu nilai summary 50% pada tiga run tersebut
+tidak boleh ditafsirkan sebagai 2/4 cube sudah berada di goal. Runtime yang lebih
+pendek juga bukan performa lebih baik karena run berhenti lebih awal dalam
+kondisi gagal.
+
+### Stack
+
+![Perbandingan performa dan goal state stack empat LLM](docs/images/llm_stack_benchmark.png)
+
+| Model | Summary | Placement terverifikasi | Final goal | Runtime | Failed attempt | Rebuild |
+|---|---:|---:|:---:|---:|---:|---:|
+| DeepSeek V4 Flash | 100% | 100% (4/4) | berhasil | 119.417 s | 2 | 1 |
+| Qwen3 Coder | 100% | 100% (4/4) | berhasil | 119.114 s | 2 | 1 |
+| MiniMax M3 | 100% | 100% (4/4) | berhasil | 114.563 s | 2 | 1 |
+| GPT-OSS | 100% | 100% (4/4) | berhasil | 113.451 s | 2 | 1 |
+
+Semua run `stack` mencapai tower 4/4. Setiap run memiliki dua failed attempt
+dan satu `STACK_REBUILD`; akibatnya hanya 7 dari 8 step ID asli yang pernah
+berstatus OK (87.5%, dibulatkan 88% pada gambar), tetapi placement recovery
+cube3 membuat final goal tetap 100%. GPT-OSS memiliki runtime terpendek pada
+sampel ini. Seluruh plan cocok 100% pada struktur action. Skor predicate
+DeepSeek 67% berasal dari dua goal tambahan (`clear(cube4)` dan `handempty`)
+dibanding empat predicate referensi, bukan dari kegagalan eksekusi.
+
+Gambar dapat dibuat ulang setelah log baru ditambahkan:
+
+```bash
+python -m pip install -e ".[viz]"
+python -m telemetry.visualize_llm_benchmarks
+```
+
 ## Quick start
 
 ```bash
@@ -187,7 +265,7 @@ telemetry berada pada typed code profile atau TOML.
 ## Status validasi
 
 ```text
-52 passed
+62 passed
 ```
 
 Test suite memvalidasi contracts, plan gates, context parsing, slot allocation,

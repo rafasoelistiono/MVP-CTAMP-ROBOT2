@@ -22,6 +22,11 @@ from task_planning.validator import validate
 from plugins.registry import DEFAULT_REGISTRY, PluginRegistry
 from scene import prepare_scene_variant
 from telemetry import write_run_manifest, write_summary_csv
+from telemetry.naming import (
+    infer_experiment_label,
+    normalize_experiment_label,
+    with_experiment_label,
+)
 from world.builder import build_world_state
 from world.slot_allocator import allocate_slots, validate_slots
 
@@ -73,6 +78,11 @@ def _arguments() -> argparse.Namespace:
         default="",
         help="Stable experiment label used to group reference and candidate runs.",
     )
+    parser.add_argument(
+        "--experiment-label",
+        default="",
+        help="Filename label; inferred from a labeled plan filename when omitted.",
+    )
     return parser.parse_args()
 
 
@@ -82,6 +92,13 @@ def main() -> int:
     # No MuJoCo/executor import is allowed above this line or before all gates pass.
     world = build_world_state(args.context)
     plan = load_plan(args.plan)
+    experiment_label = normalize_experiment_label(args.experiment_label)
+    if not experiment_label:
+        experiment_label = infer_experiment_label(
+            args.plan,
+            scene_id=plan.scene_id,
+            task=plan.task,
+        )
     if args.scene != world.variant:
         raise ValueError(
             f"--scene {args.scene!r} does not match context variant {world.variant!r}"
@@ -120,6 +137,7 @@ def main() -> int:
         obstacle_buffer_m=runtime_config.safety.target_obstacle_buffer_m,
     )
     run_id = time.strftime("%Y%m%d_%H%M%S")
+    run_tag = with_experiment_label(run_id, experiment_label)
     args.log_dir.mkdir(parents=True, exist_ok=True)
     scene_file = prepare_scene_variant(
         world.variant,
@@ -129,8 +147,8 @@ def main() -> int:
         runtime_config,
         model=replace(runtime_config.model, xml_path=scene_file),
     ).validate()
-    backend_event_path = args.log_dir / f"motion_{plan.task}_{world.variant}_{run_id}_events.csv"
-    runner_event_path = args.log_dir / f"events_{plan.task}_{world.variant}_{run_id}.csv"
+    backend_event_path = args.log_dir / f"motion_{plan.task}_{world.variant}_{run_tag}_events.csv"
+    runner_event_path = args.log_dir / f"events_{plan.task}_{world.variant}_{run_tag}.csv"
     runtime_config = replace(
         runtime_config,
         telemetry=replace(
@@ -143,8 +161,8 @@ def main() -> int:
         ),
     ).validate()
     manifest_path = write_run_manifest(
-        args.log_dir / f"run_{plan.task}_{world.variant}_{run_id}_manifest.json",
-        run_id=run_id,
+        args.log_dir / f"run_{plan.task}_{world.variant}_{run_tag}_manifest.json",
+        run_id=run_tag,
         config=runtime_config,
         plan_file=args.plan,
         context_file=args.context,
@@ -154,7 +172,7 @@ def main() -> int:
         plugin_package=args.plugin_package,
         plan_source=args.plan_source,
         benchmark_role=args.benchmark_role,
-        benchmark_label=args.benchmark_label,
+        benchmark_label=args.benchmark_label or experiment_label,
     )
     activate_runtime_config(runtime_config)
 
@@ -178,7 +196,7 @@ def main() -> int:
                 fallback_threshold=runtime_config.adaptive.pinocchio_skip_rate,
             ),
             plugin_registry=registry,
-            event_log=EventLog(runner_event_path, run_id),
+            event_log=EventLog(runner_event_path, run_tag),
             primitives=primitives,
             runtime_config=runtime_config,
         )
@@ -207,7 +225,9 @@ def main() -> int:
             "llm_used": args.plan_source in {"response_file", "llm_generated"},
             "plan_source": args.plan_source,
             "benchmark_role": args.benchmark_role,
-            "benchmark_label": args.benchmark_label,
+            "benchmark_label": args.benchmark_label or experiment_label,
+            "experiment_label": experiment_label,
+            "run_id": run_id,
             "plan_file": str(args.plan),
             "runtime_profile": runtime_config.name,
             "runtime_config_file": str(args.runtime_config or ""),

@@ -9,6 +9,12 @@
 - y_range: [-0.75, 0.75]
 - z_top: 0.80
 - goal_center: [0.22, -0.06, 0.806]
+- goal_area_size_xy: [0.52, 0.40]
+
+## geometry
+- cube_size_xyz: [0.066, 0.066, 0.066]
+- cylinder_radius: 0.026
+- cylinder_height: 0.08
 
 ## robot
 - id: panda_left
@@ -80,3 +86,56 @@
 - preserve_obstacles: true
 - max_retries_per_object: 3
 - allowed_predicates: [at, on, clear, handempty, holding, aligned-row]
+
+## task_plan_contract
+- schema_version: ctamp-plan/v1
+- output_format: Satu JSON object valid saja tanpa Markdown, code fence, komentar, atau penjelasan.
+- task: align
+- slot_type: line
+- slot_axis: x
+- geometry_rule: Hitung sendiri spacing_m, row_y, base_z, dan center_x dari jumlah target, goal area, permukaan meja, serta dimensi object pada environment. Semua cube harus muat, tidak overlap, dan tetap di goal area.
+- target_rule: Gunakan seluruh target_objects dan pertahankan urutan yang dinyatakan task saat menentukan slot_0 sampai slot terakhir.
+- step_rule: Setiap target harus memiliki tepat satu pasangan pick lalu place. Tentukan sendiri pemetaan object ke slot yang konsisten dengan urutan target. Jangan menambahkan stack_place, retry, atau recovery step ke TaskPlan.
+- predicate_rule: goal_predicates memakai object dengan field name dan args. Preconditions dan effects harus dihilangkan. Jika benar-benar disertakan, keduanya wajib array string seperti clear(cube1), holding(cube1), dan handempty; jangan memakai object predicate.
+- constraints_rule: constraints output cukup preserve_obstacles dan move_order.
+
+## task_plan_shape_hint
+
+Hint berikut sengaja tidak lengkap, tidak berurutan, dan bukan JSON final yang
+valid. Jangan menyalinnya secara literal. Ganti seluruh placeholder, tentukan
+pemetaan object ke slot dari task, lalu beri step_id integer berurutan mulai 0.
+
+~~~text
+{
+  "schema_version": "ctamp-plan/v1",
+  "task": "align",
+  "scene_id": "<scene_id dari context>",
+  "target_objects": ["<semua target dalam urutan task>"],
+  "goal_predicates": [
+    {"name": "aligned-row", "args": ["<semua target>"]},
+    {"name": "at", "args": ["<cube>", "<slot yang sesuai>"]},
+    "<lengkapi predicate at untuk seluruh cube; urutan contoh ini diacak>"
+  ],
+  "slot_config": {
+    "type": "line",
+    "axis": "x",
+    "spacing_m": "<hitung dari environment>",
+    "row_y": "<hitung dari environment>",
+    "base_z": "<hitung dari environment>",
+    "center_x": "<hitung dari environment>"
+  },
+  "steps": [
+    {"step_id": "*", "action": "place", "object": "<cube>", "slot": "<slot>"},
+    {"step_id": "*", "action": "pick", "object": "<cube>"},
+    "<lengkapi dan urutkan semua pasangan pick/place yang valid>"
+  ],
+  "constraints": {
+    "preserve_obstacles": true,
+    "move_order": ["<urutkan semua target>"]
+  }
+}
+~~~
+
+Output final wajib mengganti `*` dengan integer, mengganti semua placeholder
+dengan nilai konkret dari context, memakai tipe data yang benar, dan memenuhi
+urutan pick lalu place untuk setiap cube.

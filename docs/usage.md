@@ -65,6 +65,13 @@ python -m cli.generate_plan \
   --output task_plans/generated
 ```
 
+Gunakan suffix model pada nama response, misalnya
+`ungroup_obs_stack_cubes_qwen_3_coder.json`. `generate_plan` akan otomatis
+mempertahankan `qwen_3_coder` pada nama plan generated. `run_simulation` lalu
+mengambil label tersebut dari nama plan dan menambahkannya ke semua nama CSV
+serta manifest. Untuk input tanpa suffix, label dapat diberikan sekali melalui
+`--experiment-label qwen_3_coder`.
+
 ## 4. Pilih runtime profile
 
 Built-in profile:

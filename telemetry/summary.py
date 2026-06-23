@@ -8,6 +8,7 @@ from pathlib import Path
 
 from configuration.defaults import ROOT_DIR
 from scene import obstacle_mode_for_scene
+from .naming import normalize_experiment_label, with_experiment_label
 
 
 def write_summary_csv(
@@ -21,8 +22,15 @@ def write_summary_csv(
         out_dir = ROOT_DIR / out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    out_path = out_dir / f"{task_name}_{scene_key}_{timestamp}.csv"
+    timestamp = str(summary.get("run_id") or time.strftime("%Y%m%d_%H%M%S"))
+    experiment_label = normalize_experiment_label(
+        summary.get("experiment_label")
+    )
+    output_stem = with_experiment_label(
+        f"{task_name}_{scene_key}_{timestamp}",
+        experiment_label,
+    )
+    out_path = out_dir / f"{output_stem}.csv"
     failed = list(summary.get("failed", []))
     objects_moved = int(summary.get("objects_moved") or 0)
     objects_total = int(summary.get("objects_total") or objects_moved + len(failed))
@@ -41,6 +49,8 @@ def write_summary_csv(
     row = {
         "task": task_name,
         "scene": scene_key,
+        "run_id": with_experiment_label(timestamp, experiment_label),
+        "experiment_label": experiment_label,
         "scenario_type": scenario_type,
         "obstacle_mode": obstacle_mode,
         "success": overall_success,
