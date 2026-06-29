@@ -6,6 +6,44 @@ from task_planning.loader import PlanLoadError, parse_plan
 from task_planning.validator import PlanValidationError, validate
 
 
+def valid_align_payload():
+    return {
+        "schema_version": "ctamp-plan/v1",
+        "task": "align",
+        "scene_id": "group_no_obs",
+        "target_objects": ["cube1", "cube2"],
+        "goal_predicates": [
+            {"name": "at", "args": ["cube1", "align_slot_0"]},
+            {"name": "at", "args": ["cube2", "align_slot_1"]},
+        ],
+        "slot_config": {
+            "type": "line",
+            "axis": "x",
+            "spacing_m": 0.125,
+            "row_y": -0.06,
+            "center_x": 0.22,
+            "base_z": 0.83,
+        },
+        "steps": [
+            {"step_id": 0, "action": "pick", "object": "cube1"},
+            {
+                "step_id": 1,
+                "action": "place",
+                "object": "cube1",
+                "slot": "align_slot_0",
+            },
+            {"step_id": 2, "action": "pick", "object": "cube2"},
+            {
+                "step_id": 3,
+                "action": "place",
+                "object": "cube2",
+                "slot": "align_slot_1",
+            },
+        ],
+        "constraints": {"preserve_obstacles": True},
+    }
+
+
 def valid_stack_payload():
     return {
         "schema_version": "ctamp-plan/v1",
@@ -44,6 +82,11 @@ def valid_stack_payload():
 
 def test_valid_stack_plan_passes_all_gates():
     plan = parse_plan(valid_stack_payload())
+    validate(plan, {"cube1", "cube2"})
+
+
+def test_valid_align_plan_passes_all_gates():
+    plan = parse_plan(valid_align_payload())
     validate(plan, {"cube1", "cube2"})
 
 

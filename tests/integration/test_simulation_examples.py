@@ -22,6 +22,11 @@ from world.slot_allocator import allocate_slots, validate_slots
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES = (
     (
+        "align",
+        ROOT / "contexts/examples/ungroup_obs_align_cubes.md",
+        ROOT / "task_plans/examples/ungroup_obs_align_cubes.json",
+    ),
+    (
         "stack",
         ROOT / "contexts/examples/ungroup_obs_stack_cubes.md",
         ROOT / "task_plans/examples/ungroup_obs_stack_cubes.json",

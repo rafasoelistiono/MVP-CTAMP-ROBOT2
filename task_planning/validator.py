@@ -46,9 +46,9 @@ def _gate_1_schema(plan: TaskPlan) -> None:
         raise PlanValidationError(
             f"gate 1: task name must be a lowercase plugin identifier, got {plan.task!r}"
         )
-    if plan.slot_config.type not in {"tower", "pyramid"}:
+    if plan.slot_config.type not in {"line", "tower", "pyramid"}:
         raise PlanValidationError(
-            f"gate 1: slot_config.type must be 'tower' or 'pyramid', "
+            f"gate 1: slot_config.type must be 'line', 'tower', or 'pyramid', "
             f"got {plan.slot_config.type!r}"
         )
     if plan.slot_config.axis != "x":

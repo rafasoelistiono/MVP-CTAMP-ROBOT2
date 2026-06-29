@@ -13,9 +13,10 @@ ALLOWED_PREDICATES = frozenset(
 
 @dataclass(frozen=True)
 class SlotConfig:
-    type: Literal["tower", "pyramid"]
+    type: Literal["line", "tower", "pyramid"]
     axis: str = "x"
     spacing_m: float = 0.125
+    row_y: float = -0.06
     row_spacing_m: float = 0.08
     row_count: int = 0
     base_row_length: int = 0
