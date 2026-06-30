@@ -48,3 +48,45 @@ class TaskPlan:
     slot_config: SlotConfig
     steps: tuple[Step, ...]
     constraints: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ScoredPlan:
+    plan_id: str
+    plan: TaskPlan
+    estimated_cost: float
+    generation_method: str
+    edge_costs: tuple[float, ...] = ()
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    feasible: bool
+    ik_success: bool
+    ompl_success: bool
+    planning_time: float = 0.0
+    estimated_path_length: float = 0.0
+    min_clearance: float = 0.0
+    collision_count: int = 0
+    failure_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ProbePlanResult:
+    feasible: bool
+    edge_results: tuple[ProbeResult, ...] = ()
+    total_planning_time: float = 0.0
+    failure_reasons: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ConfirmationResult:
+    confirmed: bool
+    selected_plan_id: str | None = None
+    plan: TaskPlan | None = None
+    total_probes: int = 0
+    total_ik_failures: int = 0
+    total_ompl_failures: int = 0
+    total_planning_time: float = 0.0
+    failed_plan_ids: tuple[str, ...] = ()
+    failure_reasons: tuple[str, ...] = ()

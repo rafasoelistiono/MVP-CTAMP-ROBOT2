@@ -83,6 +83,18 @@ def _arguments() -> argparse.Namespace:
         default="",
         help="Filename label; inferred from a labeled plan filename when omitted.",
     )
+    parser.add_argument(
+        "--robust-align",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable robust candidate planning for align tasks.",
+    )
+    parser.add_argument(
+        "--use-adaptive-cache",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable adaptive cache-backed heuristic for align candidate ranking.",
+    )
     return parser.parse_args()
 
 
@@ -131,6 +143,12 @@ def main() -> int:
         enable_viewer=args.viewer,
     )
     runtime_config = plugin.configure_runtime(plan, world, runtime_config).validate()
+    if args.use_adaptive_cache:
+        from configuration.types import AlignCacheConfig
+        runtime_config = replace(
+            runtime_config,
+            align_cache=AlignCacheConfig(use_adaptive_cache=True),
+        ).validate()
     validate_slots(
         slots,
         world,
@@ -201,6 +219,7 @@ def main() -> int:
             event_log=EventLog(runner_event_path, run_tag),
             primitives=primitives,
             runtime_config=runtime_config,
+            robust_align=args.robust_align,
         )
         result = runner.run()
     except Exception as exc:
@@ -215,6 +234,20 @@ def main() -> int:
         else [{"failure_reason": runtime_error or "runtime_failed"}]
     )
     success = bool(result and result.success and not runtime_error)
+    robust_telemetry = {}
+    if runner is not None and hasattr(runner, "robust_align_telemetry"):
+        rat = runner.robust_align_telemetry
+        robust_telemetry = {
+            "robust_align_candidate_count": rat.candidate_count,
+            "robust_align_ranked_costs": list(rat.ranked_costs),
+            "robust_align_selected_plan_id": rat.selected_candidate_id or "",
+            "robust_align_failed_before_success": rat.failed_before_success,
+            "robust_align_probe_planning_time": rat.probe_planning_time,
+            "robust_align_ik_failure_count": rat.ik_failure_count,
+            "robust_align_ompl_failure_count": rat.ompl_failure_count,
+            "robust_align_alignment_error": rat.alignment_error,
+            "robust_align_spacing_error": rat.spacing_error,
+        }
     summary_path = write_summary_csv(
         task_name=f"task_plan_{plan.task}",
         scene_key=world.variant,
@@ -234,6 +267,7 @@ def main() -> int:
             "runtime_profile": runtime_config.name,
             "runtime_config_file": str(args.runtime_config or ""),
             "run_manifest": str(manifest_path),
+            **robust_telemetry,
         },
         log_dir=args.log_dir,
     )

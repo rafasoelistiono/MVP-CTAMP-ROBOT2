@@ -65,27 +65,45 @@ class AlignTaskPlugin:
             raise PlanValidationError(
                 "align plan must contain exactly one pick/place pair per cube"
             )
+        flexible_order = plan.constraints.get("flexible_order", False)
         used_slots: set[str] = set()
-        for index, object_id in enumerate(expected):
+        picked_objects: list[str] = []
+        for index in range(len(expected)):
             pick_step = plan.steps[index * 2]
             place_step = plan.steps[index * 2 + 1]
-            if pick_step.action != "pick" or pick_step.object != object_id:
+            if pick_step.action != "pick":
                 raise PlanValidationError(
-                    "align plan must pick cubes in target_objects order"
+                    "align plan must alternate pick/place starting with pick"
                 )
-            if (
-                place_step.action != "place"
-                or place_step.object != object_id
-                or not place_step.slot
-            ):
+            if place_step.action != "place" or not place_step.slot:
                 raise PlanValidationError(
-                    "align plan must place each cube immediately after picking it"
+                    f"align plan step {place_step.step_id} must be a place with slot"
                 )
+            if pick_step.object != place_step.object:
+                raise PlanValidationError(
+                    f"align plan pick/place pair {index} must operate on same object: "
+                    f"pick={pick_step.object!r}, place={place_step.object!r}"
+                )
+            if not flexible_order:
+                if pick_step.object != expected[index]:
+                    raise PlanValidationError(
+                        "align plan must pick cubes in target_objects order"
+                    )
             if place_step.slot in used_slots:
                 raise PlanValidationError(
                     f"align plan assigns duplicate slot {place_step.slot!r}"
                 )
             used_slots.add(place_step.slot)
+            picked_objects.append(pick_step.object)
+        if len(set(picked_objects)) != len(expected):
+            raise PlanValidationError(
+                "align plan must pick each target object exactly once"
+            )
+        not_picked = sorted(set(expected) - set(picked_objects))
+        if not_picked:
+            raise PlanValidationError(
+                "align plan does not pick all target objects: " + ", ".join(not_picked)
+            )
 
     def make_slot_config(
         self,

@@ -3,6 +3,7 @@ from .defaults import DEFAULT_PROFILE_REGISTRY, RuntimeProfileRegistry
 from .runtime import activate_runtime_config, clear_runtime_config, get_active_runtime_config
 from .types import (
     AdaptiveConfig,
+    AlignCacheConfig,
     GraspConfig,
     IKConfig,
     ModelConfig,
@@ -16,6 +17,7 @@ from .types import (
 
 __all__ = [
     "AdaptiveConfig",
+    "AlignCacheConfig",
     "DEFAULT_PROFILE_REGISTRY",
     "GraspConfig",
     "IKConfig",

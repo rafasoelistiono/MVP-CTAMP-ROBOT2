@@ -74,6 +74,23 @@ def write_summary_csv(
         "runtime_profile": summary.get("runtime_profile", ""),
         "runtime_config_file": summary.get("runtime_config_file", ""),
         "run_manifest": summary.get("run_manifest", ""),
+        "robust_align_candidate_count": summary.get("robust_align_candidate_count", ""),
+        "robust_align_ranked_costs_json": json.dumps(
+            summary.get("robust_align_ranked_costs", []), ensure_ascii=False
+        ),
+        "robust_align_selected_plan_id": summary.get("robust_align_selected_plan_id", ""),
+        "robust_align_failed_before_success": summary.get(
+            "robust_align_failed_before_success", ""
+        ),
+        "robust_align_probe_planning_time": summary.get(
+            "robust_align_probe_planning_time", ""
+        ),
+        "robust_align_ik_failure_count": summary.get("robust_align_ik_failure_count", ""),
+        "robust_align_ompl_failure_count": summary.get(
+            "robust_align_ompl_failure_count", ""
+        ),
+        "robust_align_alignment_error": summary.get("robust_align_alignment_error", ""),
+        "robust_align_spacing_error": summary.get("robust_align_spacing_error", ""),
     }
     with out_path.open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(row))

@@ -130,6 +130,15 @@ class TelemetryConfig:
 
 
 @dataclass(frozen=True)
+class AlignCacheConfig:
+    use_adaptive_cache: bool = False
+    adaptive_cache_weight: float = 0.5
+    min_samples_for_cache: int = 3
+    failure_penalty: float = 2.0
+    cache_key_granularity: str = "medium"
+
+
+@dataclass(frozen=True)
 class RuntimeConfig:
     name: str
     model: ModelConfig
@@ -141,6 +150,7 @@ class RuntimeConfig:
     verification: VerificationConfig = VerificationConfig()
     recovery: RecoveryConfig = RecoveryConfig()
     telemetry: TelemetryConfig = TelemetryConfig()
+    align_cache: AlignCacheConfig = AlignCacheConfig()
     enable_viewer: bool = True
 
     def validate(self) -> "RuntimeConfig":

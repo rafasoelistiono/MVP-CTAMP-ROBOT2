@@ -3,12 +3,12 @@ from __future__ import annotations
 import math
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from backends.adaptive.event_log import EventLog
 from backends.adaptive.hint_cache import HintCache
 from configuration import RuntimeConfig, get_active_runtime_config
-from task_planning.types import Step, TaskPlan
+from task_planning.types import ConfirmationResult, ScoredPlan, Step, TaskPlan
 from plugins.registry import PluginRegistry
 from world.state import WorldState
 
@@ -38,6 +38,19 @@ class RunResult:
     step_results: tuple[StepResult, ...]
 
 
+@dataclass(frozen=True)
+class RobustAlignTelemetry:
+    candidate_count: int = 0
+    ranked_costs: tuple[float, ...] = ()
+    selected_candidate_id: str | None = None
+    failed_before_success: int = 0
+    probe_planning_time: float = 0.0
+    ik_failure_count: int = 0
+    ompl_failure_count: int = 0
+    alignment_error: float = 0.0
+    spacing_error: float = 0.0
+
+
 class TaskRunner:
     """Generic step runner. Task-specific validation and goals live in plugins."""
 
@@ -51,6 +64,7 @@ class TaskRunner:
         event_log: EventLog,
         primitives: PrimitiveExecutor,
         runtime_config: RuntimeConfig | None = None,
+        robust_align: bool = False,
     ):
         self.plan = plan
         self.world = world
@@ -70,8 +84,182 @@ class TaskRunner:
         self.recovery = RecoveryPolicy(world.max_retries_per_object)
         self._recovery_step_id = max(step.step_id for step in plan.steps) + 1
         self._stack_rebuilds = 0
+        self._robust_align = robust_align and plan.task == "align"
+        self._robust_align_telemetry = RobustAlignTelemetry()
 
     def run(self) -> RunResult:
+        if self._robust_align:
+            return self._run_robust_align()
+        return self._run_standard()
+
+    @property
+    def robust_align_telemetry(self) -> RobustAlignTelemetry:
+        return self._robust_align_telemetry
+
+    def _run_robust_align(self) -> RunResult:
+        from task_planning.candidate_generator import generate_align_candidates
+        from task_planning.cost_model import rank_candidate_plans
+        from .confirmation import confirm_ranked_align_candidates
+        from .motion_probe import MotionProbe
+
+        candidates = generate_align_candidates(self.world, self.slots)
+        cache_cfg = self.runtime_config.align_cache
+        cache_config_dict = {
+            "granularity": cache_cfg.cache_key_granularity,
+            "min_samples": cache_cfg.min_samples_for_cache,
+            "cache_weight": cache_cfg.adaptive_cache_weight,
+            "failure_penalty": cache_cfg.failure_penalty,
+        }
+        ranked = rank_candidate_plans(
+            candidates,
+            self.world,
+            self.slots,
+            hint_cache=self.hint_cache if cache_cfg.use_adaptive_cache else None,
+            use_adaptive_cache=cache_cfg.use_adaptive_cache,
+            cache_config=cache_config_dict,
+        )
+        self.event_log.write(
+            "ROBUST_ALIGN",
+            "CANDIDATES",
+            task=self.plan.task,
+            scene_id=self.plan.scene_id,
+            candidate_count=len(candidates),
+            ranked_costs=[s.estimated_cost for s in ranked],
+            adaptive_cache_used=cache_cfg.use_adaptive_cache,
+        )
+
+        motion_probe = MotionProbe(
+            runtime=None,
+            primitives=self.primitives,
+            hint_cache=self.hint_cache,
+        )
+        confirmation = confirm_ranked_align_candidates(
+            self.world, ranked, self.slots, motion_probe
+        )
+
+        self._record_cache_entries(
+            ranked, confirmation, motion_probe, slots=self.slots
+        )
+
+        self._robust_align_telemetry = RobustAlignTelemetry(
+            candidate_count=len(candidates),
+            ranked_costs=tuple(s.estimated_cost for s in ranked),
+            selected_candidate_id=confirmation.selected_plan_id,
+            failed_before_success=len(confirmation.failed_plan_ids),
+            probe_planning_time=confirmation.total_planning_time,
+            ik_failure_count=confirmation.total_ik_failures,
+            ompl_failure_count=confirmation.total_ompl_failures,
+        )
+
+        if not confirmation.confirmed or confirmation.plan is None:
+            self.event_log.write(
+                "ROBUST_ALIGN",
+                "ALL_FAILED",
+                task=self.plan.task,
+                scene_id=self.plan.scene_id,
+                candidate_count=len(candidates),
+                failure_reasons=confirmation.failure_reasons,
+            )
+            if cache_cfg.use_adaptive_cache:
+                self.hint_cache.save_align_caches()
+            return RunResult(
+                success=False,
+                moved_count=0,
+                failure_reasons=(
+                    "all_candidates_infeasible",
+                    *confirmation.failure_reasons,
+                ),
+                step_results=(),
+            )
+
+        confirmed_plan = confirmation.plan
+        self.event_log.write(
+            "ROBUST_ALIGN",
+            "CONFIRMED",
+            task=self.plan.task,
+            scene_id=self.plan.scene_id,
+            selected_plan_id=confirmation.selected_plan_id,
+            estimated_cost=next(
+                (s.estimated_cost for s in ranked if s.plan_id == confirmation.selected_plan_id),
+                0.0,
+            ),
+        )
+
+        self.plan = confirmed_plan
+        self._recovery_step_id = max(step.step_id for step in confirmed_plan.steps) + 1
+        self.plugin.validate_plan(confirmed_plan, self.world)
+
+        result = self._run_standard()
+
+        if cache_cfg.use_adaptive_cache:
+            from task_planning.adaptive_heuristic import record_plan_result_to_cache
+            record_plan_result_to_cache(
+                cache=self.hint_cache,
+                world=self.world,
+                plan=confirmed_plan,
+                slots=self.slots,
+                success=result.success,
+                actual_cost=next(
+                    (s.estimated_cost for s in ranked if s.plan_id == confirmation.selected_plan_id),
+                    0.0,
+                ),
+                planning_time=confirmation.total_planning_time,
+                ik_failures=confirmation.total_ik_failures,
+                ompl_failures=confirmation.total_ompl_failures,
+                failure_reason=";".join(result.failure_reasons) if not result.success else "",
+                run_id=self.event_log.run_id,
+                granularity=cache_cfg.cache_key_granularity,
+            )
+            self.hint_cache.save_align_caches()
+
+        return result
+
+    def _record_cache_entries(
+        self,
+        ranked: list,
+        confirmation,
+        motion_probe: "MotionProbe",
+        slots: dict[str, tuple[float, float, float]],
+    ) -> None:
+        from task_planning.adaptive_heuristic import record_probe_result_to_cache
+
+        cache_cfg = self.runtime_config.align_cache
+        if not cache_cfg.use_adaptive_cache:
+            return
+
+        for scored in ranked:
+            probe_result = motion_probe.probe_align_plan_feasibility(
+                self.world, scored.plan, slots
+            )
+            i = 0
+            step_results = list(probe_result.edge_results)
+            edge_idx = 0
+            while i < len(scored.plan.steps) - 1:
+                pick_step = scored.plan.steps[i]
+                place_step = scored.plan.steps[i + 1]
+                if pick_step.action == "pick" and place_step.action == "place":
+                    if edge_idx < len(step_results):
+                        edge = step_results[edge_idx]
+                        record_probe_result_to_cache(
+                            cache=self.hint_cache,
+                            world=self.world,
+                            object_id=pick_step.object,
+                            slot_id=place_step.slot or "",
+                            slots=slots,
+                            success=edge.feasible,
+                            actual_cost=scored.estimated_cost / max(1, len(step_results)),
+                            planning_time=edge.planning_time,
+                            ik_failures=0 if edge.ik_success else 1,
+                            ompl_failures=0 if edge.ompl_success or not edge.ik_success else 1,
+                            collisions=edge.collision_count,
+                            failure_reason=edge.failure_reason or "",
+                            run_id=self.event_log.run_id,
+                            granularity=cache_cfg.cache_key_granularity,
+                        )
+                    edge_idx += 1
+                i += 2
+
+    def _run_standard(self) -> RunResult:
         results: list[StepResult] = []
         failures: list[str] = []
         completed_objects: set[str] = set()
